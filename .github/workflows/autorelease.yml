@@ -1,0 +1,68 @@
+name: Autorelease
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      new_version:
+        description: "Bump and publish (semver part or x.y.z)"
+        type: choice
+        default: patch
+        options: [patch, minor, major]
+
+jobs:
+  autorelease:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - name: Setup git config
+        run: |
+          git config user.name actions-bot
+          git config user.email actions-bot@users.noreply.github.com
+
+      - uses: jdx/mise-action@6d1e696aa24c1aa1bcc1adea0212707c71ab78a8 # v3
+
+      - name: Unit tests (lib + examples compile)
+        run: |
+          cargo test --lib
+          cargo build --examples
+
+      - name: Integration tests (optional)
+        if: vars.FETCHURL_TEST_IMAGE != ''
+        env:
+          FETCHURL_TEST_IMAGE: ${{ vars.FETCHURL_TEST_IMAGE }}
+        run: cargo test --test integration
+        continue-on-error: true
+
+      - name: Bump version
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          NEW_VERSION: ${{ github.event.inputs.new_version }}
+        run: |
+          NO_TAG=1 ./make_release "$NEW_VERSION"
+          VERSION="$(grep -E '^version = ' Cargo.toml | head -1 | sed -E 's/version = \"([^\"]+)\"/\1/')"
+          echo "RELEASE_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "New version: $VERSION" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create GitHub release
+        if: env.RELEASE_VERSION != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: v${{ env.RELEASE_VERSION }}
+        run: |
+          git tag "$TAG"
+          git push origin "$TAG"
+          git push origin HEAD:main
+          gh release create "$TAG" --title "Release $TAG" --generate-notes
+
+      - name: Publish to crates.io
+        if: env.RELEASE_VERSION != ''
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_TOKEN }}
+        run: cargo publish --allow-dirty
