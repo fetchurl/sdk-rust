@@ -15,9 +15,10 @@ case "$MODE" in
 esac
 VERSION="${VERSION#v}"
 
-sed -i "0,/^version = /s//version = \"$VERSION\"/" Cargo.toml
-git add Cargo.toml
+# Only the first [package] version line
+sed -i "0,/^version = .*/s//version = \"$VERSION\"/" Cargo.toml
 
+git add Cargo.toml
 git commit -sm "bump to $VERSION" 1>&2 || true
 if [[ ! -v NO_TAG ]]; then
   git tag "$VERSION"
