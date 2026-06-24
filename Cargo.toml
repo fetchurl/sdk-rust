@@ -1,6 +1,6 @@
 [package]
 name = "fetchurl-sdk"
-version = "0.2.0"
+version = "0.2.1""0.2.0"
 edition = "2024"
 description = "Protocol-level client SDK for fetchurl content-addressable cache servers"
 license = "MIT"
