@@ -1,31 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [ $# -ne 1 ]; then
-  echo "usage: ./make_release patch|minor|major|<x.y.z>" >&2
-  exit 1
-fi
+# Usage: ./make_release [next|major|minor|patch|<x.y.z>]
+MODE="${1:-next}"
 
-VERSION_ARG="$1"
-CURRENT="$(grep -E '^version = ' Cargo.toml | head -1 | sed -E 's/version = "([^"]+)"/\1/')"
-IFS=. read -r MAJ MIN PAT <<<"$CURRENT"
-
-case "$VERSION_ARG" in
-  patch) VERSION="${MAJ}.${MIN}.$((PAT + 1))" ;;
-  minor) VERSION="${MAJ}.$((MIN + 1)).0" ;;
-  major) VERSION="$((MAJ + 1)).0.0" ;;
-  *) VERSION="$VERSION_ARG" ;;
+case "$MODE" in
+  next|major|minor|patch)
+    VERSION="$(svu "$MODE")"
+    ;;
+  *)
+    VERSION="${MODE#v}"
+    ;;
 esac
+VERSION="${VERSION#v}"
 
-# Only the [package] version line (first occurrence)
 sed -i "0,/^version = /s//version = \"$VERSION\"/" Cargo.toml
 
 git add Cargo.toml
-git commit -sm "bump to $VERSION"
+git commit -sm "bump to $VERSION" || true
 if [[ ! -v NO_TAG ]]; then
-  git tag "v$VERSION"
-  git push --tags
+  git tag "$VERSION"
+  git push origin "$VERSION"
 fi
-git push
+git push origin HEAD
 
 echo "$VERSION"

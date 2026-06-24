@@ -8,10 +8,10 @@ on:
   workflow_dispatch:
     inputs:
       new_version:
-        description: "Bump and publish (semver part or x.y.z)"
+        description: "Version bump mode (svu) or explicit x.y.z"
         type: choice
-        default: patch
-        options: [patch, minor, major]
+        default: next
+        options: [next, patch, minor, major]
 
 jobs:
   autorelease:
@@ -20,6 +20,9 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          # svu needs full history + tags
+          fetch-depth: 0
 
       - name: Setup git config
         run: |
@@ -40,21 +43,20 @@ jobs:
         run: cargo test --test integration
         continue-on-error: true
 
-      - name: Bump version
+      - name: Bump version (svu)
         if: github.event_name == 'workflow_dispatch'
         env:
           NEW_VERSION: ${{ github.event.inputs.new_version }}
         run: |
-          NO_TAG=1 ./make_release "$NEW_VERSION"
-          VERSION="$(grep -E '^version = ' Cargo.toml | head -1 | sed -E 's/version = \"([^\"]+)\"/\1/')"
+          VERSION="$(NO_TAG=1 ./make_release "$NEW_VERSION")"
           echo "RELEASE_VERSION=$VERSION" >> "$GITHUB_ENV"
-          echo "New version: $VERSION" >> "$GITHUB_STEP_SUMMARY"
+          echo "New version: $VERSION (from svu $NEW_VERSION)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Create GitHub release
         if: env.RELEASE_VERSION != ''
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: v${{ env.RELEASE_VERSION }}
+          TAG: ${{ env.RELEASE_VERSION }}
         run: |
           git tag "$TAG"
           git push origin "$TAG"

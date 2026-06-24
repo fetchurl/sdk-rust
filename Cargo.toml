@@ -1,12 +1,12 @@
 [package]
 name = "fetchurl-sdk"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Protocol-level client SDK for fetchurl content-addressable cache servers"
 license = "MIT"
 authors = ["lucasew"]
 repository = "https://github.com/fetchurl/sdk-rust"
-homepage = "https://github.com/fetchurl/sdk-rust"
+homepage = "https://crates.io/crates/fetchurl-sdk"
 documentation = "https://docs.rs/fetchurl-sdk"
 keywords = ["fetchurl", "cache", "content-addressable", "hash"]
 categories = ["network-programming", "web-programming::http-client"]
