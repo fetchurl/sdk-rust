@@ -35,12 +35,3 @@ cargo run --example get -- --help
 # Integration (Docker + image):
 # FETCHURL_TEST_IMAGE=fetchurl:local cargo test --test integration
 ```
-
-## Related
-
-| Repo | Role |
-|------|------|
-| [fetchurl/spec](https://github.com/fetchurl/spec) | Protocol |
-| [fetchurl/fetchurl](https://github.com/fetchurl/fetchurl) | Go server |
-| [fetchurl/sdk-js](https://github.com/fetchurl/sdk-js) | JavaScript SDK |
-| [fetchurl/sdk-python](https://github.com/fetchurl/sdk-python) | Python SDK |
