@@ -8,7 +8,7 @@ This crate does **not** perform HTTP by itself. It provides a state machine (`Fe
 
 ```toml
 [dependencies]
-fetchurl-sdk = "0.1"
+fetchurl-sdk = "0.2"
 ```
 
 ## Protocol
