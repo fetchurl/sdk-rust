@@ -14,7 +14,10 @@ use clap::Parser;
 use fetchurl_sdk as fetchurl;
 
 #[derive(Parser)]
-#[command(name = "fetchurl-get", about = "Fetch a file using content-addressable storage")]
+#[command(
+    name = "fetchurl-get",
+    about = "Fetch a file using content-addressable storage"
+)]
 struct Cli {
     /// Hash algorithm (sha1, sha256, sha512)
     algo: String,
@@ -34,14 +37,13 @@ struct Cli {
 fn main() {
     let cli = Cli::parse();
 
-    let mut session =
-        match fetchurl::FetchSession::new(&cli.algo, &cli.hash, &cli.urls) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("error: {e}");
-                process::exit(1);
-            }
-        };
+    let mut session = match fetchurl::FetchSession::new(&cli.algo, &cli.hash, &cli.urls) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
+    };
 
     let mut out: Box<dyn Write> = match cli.output {
         Some(ref path) => match File::create(path) {
