@@ -214,6 +214,9 @@ impl FetchSession {
             return Err(Error::UnsupportedAlgorithm(algo));
         }
 
+        // Spec: hashes MUST be lowercase hex. Normalize so mixed-case callers still work.
+        let hash = hash.to_ascii_lowercase();
+
         let servers_env = std::env::var("FETCHURL_SERVER").unwrap_or_default();
         let servers = parse_fetchurl_server(&servers_env);
 
@@ -250,7 +253,7 @@ impl FetchSession {
             attempts,
             current: 0,
             algo,
-            hash: hash.to_string(),
+            hash,
             done: false,
             success: false,
         })
@@ -355,7 +358,8 @@ impl<W: Write> HashVerifier<W> {
         HashVerifier {
             inner,
             hasher,
-            expected_hash: expected_hash.to_string(),
+            // Spec: hashes MUST be lowercase hex.
+            expected_hash: expected_hash.to_ascii_lowercase(),
             bytes_written: 0,
         }
     }
@@ -467,6 +471,18 @@ mod tests {
     }
 
     #[test]
+    fn test_hash_verifier_accepts_uppercase_expected() {
+        let data = b"hello world";
+        let hash = sha256_hex(data).to_ascii_uppercase();
+
+        let mut output = Vec::new();
+        let mut verifier = HashVerifier::new("sha256", &hash, &mut output);
+        verifier.write_all(data).unwrap();
+        verifier.finish().unwrap();
+        assert_eq!(output, data);
+    }
+
+    #[test]
     fn test_hash_verifier_mismatch() {
         let data = b"hello world";
         let wrong_hash = sha256_hex(b"wrong");
@@ -476,6 +492,22 @@ mod tests {
         verifier.write_all(data).unwrap();
         let err = verifier.finish().unwrap_err();
         assert!(matches!(err, Error::HashMismatch { .. }));
+    }
+
+    #[test]
+    fn test_session_lowercases_hash_in_server_url() {
+        let hash = sha256_hex(b"test");
+        let upper = hash.to_ascii_uppercase();
+        unsafe {
+            std::env::set_var("FETCHURL_SERVER", "\"http://cache/api/fetchurl\"");
+        }
+        let mut session = FetchSession::new("sha256", &upper, &["http://src"]).unwrap();
+        let attempt = session.next_attempt().unwrap();
+        assert!(
+            attempt.url().ends_with(&format!("/sha256/{hash}")),
+            "server URL must use lowercase hash, got {}",
+            attempt.url()
+        );
     }
 
     #[test]
