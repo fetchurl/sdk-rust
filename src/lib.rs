@@ -44,6 +44,10 @@ pub enum Error {
     #[error("source_urls is required")]
     MissingSourceUrls,
 
+    /// Content hash is blank, not hexadecimal, or the wrong length for the algorithm.
+    #[error("{0}")]
+    InvalidHash(String),
+
     /// The content hash does not match the expected hash.
     #[error("hash mismatch: expected {expected}, got {actual}")]
     HashMismatch { expected: String, actual: String },
@@ -66,6 +70,47 @@ pub fn normalize_algo(name: &str) -> String {
 /// Check if a hash algorithm is supported.
 pub fn is_supported(algo: &str) -> bool {
     matches!(normalize_algo(algo).as_str(), "sha1" | "sha256" | "sha512")
+}
+
+/// Full digest length in hex characters for each supported algorithm.
+const DIGEST_HEX_LEN: &[(&str, usize)] = &[("sha1", 40), ("sha256", 64), ("sha512", 128)];
+
+/// Expected hex length of a full digest for `algo`.
+///
+/// Returns [`Error::UnsupportedAlgorithm`] if the algorithm is not supported.
+pub fn expected_hex_length(algo: &str) -> Result<usize, Error> {
+    let key = normalize_algo(algo);
+    DIGEST_HEX_LEN
+        .iter()
+        .find(|(name, _)| *name == key)
+        .map(|(_, len)| *len)
+        .ok_or(Error::UnsupportedAlgorithm(key))
+}
+
+/// Normalize a content hash per the fetchurl spec: full-length lowercase hex.
+///
+/// Rejects blank, non-hex, and wrong-length values before any network I/O.
+/// Mixed-case hex is accepted and returned lowercased.
+pub fn normalize_content_hash(algo: &str, hash: &str) -> Result<String, Error> {
+    if hash.trim().is_empty() {
+        return Err(Error::InvalidHash("hash is required".into()));
+    }
+    let key = normalize_algo(algo);
+    let expected_len = expected_hex_length(&key)?;
+    let lower = hash.to_ascii_lowercase();
+    if lower.len() != expected_len {
+        return Err(Error::InvalidHash(format!(
+            "hash must be {expected_len} hex characters for {key} (got {})",
+            lower.len()
+        )));
+    }
+    if !lower
+        .bytes()
+        .all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return Err(Error::InvalidHash("hash must be hexadecimal".into()));
+    }
+    Ok(lower)
 }
 
 /// Parse the `FETCHURL_SERVER` environment variable value (an RFC 8941 string list).
@@ -214,8 +259,8 @@ impl FetchSession {
             return Err(Error::UnsupportedAlgorithm(algo));
         }
 
-        // Spec: hashes MUST be lowercase hex. Normalize so mixed-case callers still work.
-        let hash = hash.to_ascii_lowercase();
+        // Spec: hashes MUST be lowercase hex of the full digest. Fail early on garbage.
+        let hash = normalize_content_hash(&algo, hash)?;
 
         let servers_env = std::env::var("FETCHURL_SERVER").unwrap_or_default();
         let servers = parse_fetchurl_server(&servers_env);
@@ -355,11 +400,12 @@ pub struct HashVerifier<W: Write> {
 impl<W: Write> HashVerifier<W> {
     fn new(algo: &str, expected_hash: &str, inner: W) -> Self {
         let hasher = HasherInner::new(algo).expect("HashVerifier created with validated algo");
+        // Session already validates; keep lowercase invariant if called with mixed case.
+        let expected_hash = expected_hash.to_ascii_lowercase();
         HashVerifier {
             inner,
             hasher,
-            // Spec: hashes MUST be lowercase hex.
-            expected_hash: expected_hash.to_ascii_lowercase(),
+            expected_hash,
             bytes_written: 0,
         }
     }
@@ -421,6 +467,74 @@ mod tests {
         assert!(is_supported("sha1"));
         assert!(is_supported("sha512"));
         assert!(!is_supported("md5"));
+    }
+
+    #[test]
+    fn test_expected_hex_length() {
+        assert_eq!(expected_hex_length("sha1").unwrap(), 40);
+        assert_eq!(expected_hex_length("SHA-256").unwrap(), 64);
+        assert_eq!(expected_hex_length("sha512").unwrap(), 128);
+        assert!(matches!(
+            expected_hex_length("md5"),
+            Err(Error::UnsupportedAlgorithm(_))
+        ));
+    }
+
+    #[test]
+    fn test_normalize_content_hash_lowercases() {
+        let hash = sha256_hex(b"hello world");
+        let upper = hash.to_ascii_uppercase();
+        assert_eq!(normalize_content_hash("sha256", &upper).unwrap(), hash);
+    }
+
+    #[test]
+    fn test_normalize_content_hash_rejects_wrong_length() {
+        let err = normalize_content_hash("sha256", "abcd").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("hex characters"), "got {msg}");
+        assert!(matches!(err, Error::InvalidHash(_)));
+    }
+
+    #[test]
+    fn test_normalize_content_hash_rejects_non_hex() {
+        let almost = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85g";
+        let err = normalize_content_hash("sha256", almost).unwrap_err();
+        assert!(err.to_string().contains("hexadecimal"));
+        assert!(matches!(err, Error::InvalidHash(_)));
+    }
+
+    #[test]
+    fn test_normalize_content_hash_rejects_blank() {
+        for bad in ["", "   "] {
+            let err = normalize_content_hash("sha256", bad).unwrap_err();
+            assert_eq!(err.to_string(), "hash is required");
+            assert!(matches!(err, Error::InvalidHash(_)));
+        }
+    }
+
+    #[test]
+    fn test_session_rejects_blank_hash() {
+        match FetchSession::new("sha256", "", &["http://src"]) {
+            Err(err) => assert_eq!(err.to_string(), "hash is required"),
+            Ok(_) => panic!("expected InvalidHash"),
+        }
+    }
+
+    #[test]
+    fn test_session_rejects_non_hex_hash() {
+        let almost = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85g";
+        match FetchSession::new("sha256", almost, &["http://src"]) {
+            Err(err) => assert!(err.to_string().contains("hexadecimal")),
+            Ok(_) => panic!("expected InvalidHash"),
+        }
+    }
+
+    #[test]
+    fn test_session_rejects_wrong_length_hash() {
+        match FetchSession::new("sha256", "abcd", &["http://src"]) {
+            Err(err) => assert!(err.to_string().contains("hex characters")),
+            Ok(_) => panic!("expected InvalidHash"),
+        }
     }
 
     #[test]
