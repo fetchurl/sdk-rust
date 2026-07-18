@@ -9,9 +9,15 @@
 use std::fs::File;
 use std::io::{self, Write};
 use std::process;
+use std::time::Duration;
 
 use clap::Parser;
 use fetchurl_sdk as fetchurl;
+
+/// Connect timeout for each attempt (matches integration-test order of magnitude).
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Per-read timeout so a stalled body does not hang the CLI forever.
+const READ_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Parser)]
 #[command(
@@ -56,10 +62,16 @@ fn main() {
         None => Box::new(io::stdout()),
     };
 
+    // Bound each attempt so a hung peer cannot wedge the process indefinitely.
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(CONNECT_TIMEOUT)
+        .timeout_read(READ_TIMEOUT)
+        .build();
+
     while let Some(attempt) = session.next_attempt() {
         eprintln!("trying: {}", attempt.url());
 
-        let mut req = ureq::get(attempt.url());
+        let mut req = agent.get(attempt.url());
         for (key, value) in attempt.headers() {
             req = req.set(key, value);
         }
