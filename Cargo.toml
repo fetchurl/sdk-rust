@@ -19,7 +19,7 @@ rand = "0.8"
 thiserror = "2"
 
 [dev-dependencies]
-ureq = { version = "2", default-features = false }
+ureq = { version = "2", default-features = false, features = ["tls"] }
 clap = { version = "4", features = ["derive"] }
 testcontainers = "0.15"
 
