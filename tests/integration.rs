@@ -60,20 +60,27 @@ fn write_temp_file(content: &[u8]) -> PathBuf {
     dir
 }
 
-/// Poll until `url` accepts HTTP (any status) or `deadline` is hit.
+/// Poll until `url` returns HTTP 200 or `deadline` is hit.
 ///
 /// Prefer this over fixed `WaitFor::seconds` sleeps and over log scraping:
 /// Python's http.server may fully-buffer stdout when not on a TTY, so
 /// "Serving HTTP" never appears in docker logs until much later.
-fn wait_reachable(agent: &ureq::Agent, url: &str, deadline: Instant) {
+///
+/// Require 200 (not merely "accept()"), so a mid-boot 502/404 does not count
+/// as ready. Spec: health is healthy only on status 200; the upstream probe
+/// hits the real object path so a missing volume mount fails before the session.
+fn wait_http_200(agent: &ureq::Agent, url: &str, deadline: Instant) {
     while Instant::now() < deadline {
         match agent.get(url).call() {
-            Ok(_) => return,
-            Err(ureq::Error::Status(_, _)) => return,
+            Ok(resp) if resp.status() == 200 => return,
+            Ok(_) | Err(ureq::Error::Status(_, _)) => {
+                // Listener is up but not ready (or wrong path) — keep polling.
+                std::thread::sleep(Duration::from_millis(200));
+            }
             Err(_) => std::thread::sleep(Duration::from_millis(200)),
         }
     }
-    panic!("timed out waiting for {url}");
+    panic!("timed out waiting for HTTP 200 from {url}");
 }
 
 #[test]
@@ -150,17 +157,17 @@ fn integration_fetchurl_server() {
 
     let deadline = Instant::now() + Duration::from_secs(45);
 
-    // Host-mapped ports: poll until listeners accept connections.
+    // Host-mapped ports: poll until each probe path is actually healthy (HTTP 200).
     let upstream_port = upstream.get_host_port_ipv4(8000);
-    wait_reachable(
+    wait_http_200(
         &agent,
         &format!("http://127.0.0.1:{upstream_port}/file"),
         deadline,
     );
 
     let host_port = server.get_host_port_ipv4(8080);
-    // Reference server exposes /api/fetchurl/health; any HTTP response means accept().
-    wait_reachable(
+    // Reference server exposes /api/fetchurl/health; 200 means healthy per spec.
+    wait_http_200(
         &agent,
         &format!("http://127.0.0.1:{host_port}/api/fetchurl/health"),
         deadline,
