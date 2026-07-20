@@ -2,6 +2,8 @@
 name = "fetchurl-sdk"
 version = "0.2.1"
 edition = "2024"
+# Edition 2024 requires rustc 1.85+; pin so older toolchains fail early.
+rust-version = "1.85"
 description = "Protocol-level client SDK for fetchurl content-addressable cache servers"
 license = "MIT"
 authors = ["lucasew"]
@@ -10,6 +12,9 @@ homepage = "https://crates.io/crates/fetchurl-sdk"
 documentation = "https://docs.rs/fetchurl-sdk"
 keywords = ["fetchurl", "cache", "content-addressable", "hash"]
 categories = ["network-programming", "web-programming::http-client"]
+# Keep the crates.io tarball to library + example sources; omit release tooling,
+# CI, and Docker integration tests (dev-deps still available from the git repo).
+exclude = ["/.github", "/make_release", "/tests", "/__pycache__", "/mise.toml", "/.svu.yml"]
 
 [dependencies]
 digest = "0.10"
