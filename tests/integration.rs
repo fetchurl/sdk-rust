@@ -44,6 +44,15 @@ fn parse_image(image: &str) -> (String, String) {
     (image.to_string(), "latest".to_string())
 }
 
+/// How long to wait for containers to become healthy (HTTP 200 probes).
+const READY_TIMEOUT: Duration = Duration::from_secs(45);
+/// Separate budget for the fetchurl session after both probes succeed.
+///
+/// Must not share the readiness clock: a slow Docker pull / cold start can
+/// burn most of a combined deadline and leave the actual download with seconds
+/// (or none) left, producing false timeouts under load.
+const FETCH_TIMEOUT: Duration = Duration::from_secs(45);
+
 /// Unique temp dir so parallel test processes do not clobber each other.
 fn write_temp_file(content: &[u8]) -> PathBuf {
     let dir = env::temp_dir().join(format!(
@@ -116,7 +125,7 @@ fn integration_fetchurl_server() {
     }
     let _upstream_cleanup = Rm(upstream_dir.clone());
 
-    // Do not rely on fixed sleeps or log lines for readiness (see wait_reachable).
+    // Do not rely on fixed sleeps or log lines for readiness (see wait_http_200).
     let upstream_image = GenericImage::new("python", "3.12-alpine")
         .with_volume(
             upstream_dir.to_string_lossy().to_string(),
@@ -155,14 +164,14 @@ fn integration_fetchurl_server() {
         .timeout_read(Duration::from_secs(10))
         .build();
 
-    let deadline = Instant::now() + Duration::from_secs(45);
+    let ready_deadline = Instant::now() + READY_TIMEOUT;
 
     // Host-mapped ports: poll until each probe path is actually healthy (HTTP 200).
     let upstream_port = upstream.get_host_port_ipv4(8000);
     wait_http_200(
         &agent,
         &format!("http://127.0.0.1:{upstream_port}/file"),
-        deadline,
+        ready_deadline,
     );
 
     let host_port = server.get_host_port_ipv4(8080);
@@ -170,8 +179,11 @@ fn integration_fetchurl_server() {
     wait_http_200(
         &agent,
         &format!("http://127.0.0.1:{host_port}/api/fetchurl/health"),
-        deadline,
+        ready_deadline,
     );
+
+    // Fresh clock for the protocol session so readiness wait does not steal it.
+    let fetch_deadline = Instant::now() + FETCH_TIMEOUT;
 
     let _env_guard =
         FetchurlServerEnv::set(format!("\"http://127.0.0.1:{host_port}/api/fetchurl\""));
@@ -181,8 +193,8 @@ fn integration_fetchurl_server() {
 
     let mut output = Vec::new();
     while let Some(attempt) = session.next_attempt() {
-        if Instant::now() > deadline {
-            panic!("integration test timed out");
+        if Instant::now() > fetch_deadline {
+            panic!("integration fetch timed out");
         }
         let mut req = agent.get(attempt.url());
         for (k, v) in attempt.headers() {
@@ -203,8 +215,8 @@ fn integration_fetchurl_server() {
         let mut buf = [0u8; 8192];
         let mut read_err = false;
         loop {
-            if Instant::now() > deadline {
-                panic!("integration test timed out");
+            if Instant::now() > fetch_deadline {
+                panic!("integration fetch timed out");
             }
             match reader.read(&mut buf) {
                 Ok(0) => break,
