@@ -82,14 +82,19 @@ fn wait_http_200(agent: &ureq::Agent, url: &str, deadline: Instant) {
     while Instant::now() < deadline {
         match agent.get(url).call() {
             Ok(resp) if resp.status() == 200 => return,
-            Ok(_) | Err(ureq::Error::Status(_, _)) => {
-                // Listener is up but not ready (or wrong path) — keep polling.
+            _ => {
+                // Connection refused, mid-boot 502/404, or wrong path — keep polling.
                 std::thread::sleep(Duration::from_millis(200));
             }
-            Err(_) => std::thread::sleep(Duration::from_millis(200)),
         }
     }
     panic!("timed out waiting for HTTP 200 from {url}");
+}
+
+fn assert_fetch_deadline(deadline: Instant) {
+    if Instant::now() > deadline {
+        panic!("integration fetch timed out");
+    }
 }
 
 #[test]
@@ -193,9 +198,7 @@ fn integration_fetchurl_server() {
 
     let mut output = Vec::new();
     while let Some(attempt) = session.next_attempt() {
-        if Instant::now() > fetch_deadline {
-            panic!("integration fetch timed out");
-        }
+        assert_fetch_deadline(fetch_deadline);
         let mut req = agent.get(attempt.url());
         for (k, v) in attempt.headers() {
             req = req.set(k, v);
@@ -215,9 +218,7 @@ fn integration_fetchurl_server() {
         let mut buf = [0u8; 8192];
         let mut read_err = false;
         loop {
-            if Instant::now() > fetch_deadline {
-                panic!("integration fetch timed out");
-            }
+            assert_fetch_deadline(fetch_deadline);
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
