@@ -10,10 +10,17 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 MANIFEST = ROOT / "Cargo.toml"
+LOCKFILE = ROOT / "Cargo.lock"
 MANIFEST_PATHS = [str(MANIFEST.relative_to(ROOT))]
+if LOCKFILE.is_file():
+    MANIFEST_PATHS.append(str(LOCKFILE.relative_to(ROOT)))
 SVU_MODES = frozenset({"next", "major", "minor", "patch"})
 UPLOAD_GLOB: str | None = None
 VERSION_RE = re.compile(r'^version\s*=\s*"[^"]*"', re.M)
+# Root package entry only — Cargo.lock can list the crate name again under other sections.
+LOCK_PACKAGE_VERSION_RE = re.compile(
+    r'(?m)^(name = "fetchurl-sdk"\nversion = ")[^"]*(")',
+)
 
 
 def log(msg: str) -> None:
@@ -40,6 +47,26 @@ def write_manifest(version: str) -> None:
     if not VERSION_RE.search(text):
         raise SystemExit('version = "..." not found in Cargo.toml')
     MANIFEST.write_text(VERSION_RE.sub(f'version = "{version}"', text, count=1), encoding="utf-8")
+    sync_cargo_lock_package_version(version)
+
+
+def sync_cargo_lock_package_version(version: str) -> None:
+    """Keep the root package version in Cargo.lock aligned with Cargo.toml.
+
+    `cargo publish` uses Cargo.toml, but a committed lockfile that still shows
+    an old package version confuses humans and release reviews. cargo itself
+    rewrites this line on the next build; do it here so the release commit is
+    self-consistent without needing a network/registry touch.
+    """
+    if not LOCKFILE.is_file():
+        return
+    text = LOCKFILE.read_text(encoding="utf-8")
+    new_text, n = LOCK_PACKAGE_VERSION_RE.subn(rf"\g<1>{version}\g<2>", text, count=1)
+    if n != 1:
+        raise SystemExit(
+            f'expected one root package entry (name = "fetchurl-sdk") in Cargo.lock, found {n}'
+        )
+    LOCKFILE.write_text(new_text, encoding="utf-8")
 
 
 def read_manifest_version() -> str:
