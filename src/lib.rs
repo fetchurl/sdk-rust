@@ -44,6 +44,10 @@ pub enum Error {
     #[error("source_urls is required")]
     MissingSourceUrls,
 
+    /// A source URL is blank or whitespace-only.
+    #[error("source URL must not be blank")]
+    BlankSourceUrl,
+
     /// Content hash is blank, not hexadecimal, or the wrong length for the algorithm.
     #[error("{0}")]
     InvalidHash(String),
@@ -254,6 +258,16 @@ impl FetchSession {
             return Err(Error::MissingSourceUrls);
         }
 
+        // Fail early on blank entries — same spirit as hash validation before any I/O.
+        let mut sources: Vec<String> = Vec::with_capacity(source_urls.len());
+        for s in source_urls {
+            let s = s.as_ref();
+            if s.trim().is_empty() {
+                return Err(Error::BlankSourceUrl);
+            }
+            sources.push(s.to_string());
+        }
+
         let algo = normalize_algo(algo);
         if !is_supported(&algo) {
             return Err(Error::UnsupportedAlgorithm(algo));
@@ -265,27 +279,26 @@ impl FetchSession {
         let servers_env = std::env::var("FETCHURL_SERVER").unwrap_or_default();
         let servers = parse_fetchurl_server(&servers_env);
 
-        let source_header = if !source_urls.is_empty() {
-            Some(encode_source_urls(source_urls))
-        } else {
-            None
-        };
+        let source_header = encode_source_urls(&sources);
 
         let mut attempts = Vec::new();
 
-        // Servers first
+        // Servers first. SFV (and messy env values) can yield empty/whitespace
+        // entries; skip them rather than building a relative `/{algo}/{hash}` URL.
         for server in servers {
-            let base = server.trim_end_matches('/');
-            let url = format!("{base}/{algo}/{hash}");
-            let mut headers = Vec::new();
-            if let Some(ref val) = source_header {
-                headers.push(("X-Source-Urls".to_string(), val.clone()));
+            let base = server.trim().trim_end_matches('/');
+            if base.is_empty() {
+                continue;
             }
-            attempts.push(FetchAttempt { url, headers });
+            let url = format!("{base}/{algo}/{hash}");
+            attempts.push(FetchAttempt {
+                url,
+                headers: vec![("X-Source-Urls".to_string(), source_header.clone())],
+            });
         }
 
         // Direct sources (shuffled per spec)
-        let mut direct: Vec<String> = source_urls.iter().map(|s| s.as_ref().to_string()).collect();
+        let mut direct = sources;
         direct.shuffle(&mut rand::thread_rng());
         for url in direct {
             attempts.push(FetchAttempt {
@@ -634,6 +647,49 @@ mod tests {
     fn test_session_missing_source_urls() {
         let err = FetchSession::new("sha256", "abc", &[] as &[&str]);
         assert!(matches!(err, Err(Error::MissingSourceUrls)));
+    }
+
+    #[test]
+    fn test_session_rejects_blank_source_url() {
+        let hash = sha256_hex(b"test");
+        for bad in ["", "   ", "\t"] {
+            match FetchSession::new("sha256", &hash, &["http://src", bad]) {
+                Err(err) => {
+                    assert!(
+                        matches!(err, Error::BlankSourceUrl),
+                        "expected BlankSourceUrl for {bad:?}, got {err:?}"
+                    );
+                    assert_eq!(err.to_string(), "source URL must not be blank");
+                }
+                Ok(_) => panic!("expected BlankSourceUrl for {bad:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_session_skips_blank_servers() {
+        // Empty SFV server entries must not become relative /algo/hash URLs.
+        let hash = sha256_hex(b"test");
+        unsafe {
+            std::env::set_var(
+                "FETCHURL_SERVER",
+                r#""  ", "http://cache/api/fetchurl", """#,
+            );
+        }
+        let mut session = FetchSession::new("sha256", &hash, &["http://src"]).unwrap();
+
+        let a1 = session.next_attempt().unwrap();
+        assert!(
+            a1.url().starts_with("http://cache/api/fetchurl/sha256/"),
+            "blank servers must be skipped, got {}",
+            a1.url()
+        );
+        assert!(!a1.headers().is_empty());
+
+        let a2 = session.next_attempt().unwrap();
+        assert_eq!(a2.url(), "http://src");
+        assert!(a2.headers().is_empty());
+        assert!(session.next_attempt().is_none());
     }
 
     #[test]
