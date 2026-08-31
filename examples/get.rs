@@ -6,8 +6,9 @@
 //! Set FETCHURL_SERVER to use cache servers:
 //!   FETCHURL_SERVER='"http://cache:8080/api/fetchurl"' cargo run --example get -- sha256 HASH --url URL
 
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use std::process;
 use std::time::Duration;
 
@@ -40,6 +41,20 @@ struct Cli {
     output: Option<String>,
 }
 
+/// Sibling temp path so a failed or partial download never replaces the target.
+fn partial_path(final_path: &str) -> PathBuf {
+    let path = Path::new(final_path);
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("output");
+    parent.join(format!(".{name}.fetchurl-partial.{}", std::process::id()))
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -51,15 +66,18 @@ fn main() {
         }
     };
 
-    let mut out: Box<dyn Write> = match cli.output {
-        Some(ref path) => match File::create(path) {
+    // File destinations write to a same-dir temp file and rename only after
+    // hash verification succeeds, so readers never see a partial target.
+    let tmp_path = cli.output.as_ref().map(|p| partial_path(p));
+    let mut out: Box<dyn Write> = match (&cli.output, &tmp_path) {
+        (Some(path), Some(tmp)) => match File::create(tmp) {
             Ok(f) => Box::new(f),
             Err(e) => {
-                eprintln!("error: cannot create {path}: {e}");
+                eprintln!("error: cannot create temporary file for {path}: {e}");
                 process::exit(1);
             }
         },
-        None => Box::new(io::stdout()),
+        _ => Box::new(io::stdout()),
     };
 
     // Bound each attempt so a hung peer cannot wedge the process indefinitely.
@@ -112,11 +130,22 @@ fn main() {
         }
     }
 
+    // Close the writer before rename/unlink.
+    drop(out);
+
     if !session.succeeded() {
         eprintln!("error: failed to fetch from any source");
-        if let Some(ref path) = cli.output {
-            let _ = std::fs::remove_file(path);
+        if let Some(tmp) = &tmp_path {
+            let _ = fs::remove_file(tmp);
         }
         process::exit(1);
+    }
+
+    if let (Some(path), Some(tmp)) = (&cli.output, &tmp_path) {
+        if let Err(e) = fs::rename(tmp, path) {
+            eprintln!("error: cannot finalize {path}: {e}");
+            let _ = fs::remove_file(tmp);
+            process::exit(1);
+        }
     }
 }
